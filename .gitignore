@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Tauri / Rust
+apps/desktop/src-tauri/target/
+**/target/
+apps/desktop/src-tauri/gen/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Supabase local
+supabase/.branches/
+supabase/.temp/
+
+# Local manifests / generated previews (studio machine artifacts)
+*.photobooth.sqlite
+previews-cache/
+Selected Photos/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+*.log
+.vscode/*
+!.vscode/extensions.json
+.idea/

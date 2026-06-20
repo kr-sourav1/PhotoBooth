@@ -1,0 +1,18 @@
+# Minimal Supabase local config. `supabase start` reads this.
+project_id = "photobooth"
+
+[db]
+port = 54322
+major_version = 15
+
+[api]
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public"]
+
+[auth]
+enable_signup = true
+site_url = "http://localhost:5173"
+
+[studio]
+port = 54323

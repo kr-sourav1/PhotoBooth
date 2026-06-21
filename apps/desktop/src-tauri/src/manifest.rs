@@ -66,3 +66,33 @@ pub fn load_all(conn: &Connection) -> rusqlite::Result<Vec<ManifestEntry>> {
     })?;
     rows.collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_and_load_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("pb-mani-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("m.sqlite");
+
+        let conn = open(&db).unwrap();
+        let e = ManifestEntry {
+            uuid: "u1".into(),
+            original_filename: "IMG_1.jpg".into(),
+            original_path: "/shoot/IMG_1.jpg".into(),
+            content_hash: "abc".into(),
+        };
+        insert(&conn, &e, "u1.jpg", 1600, 1067).unwrap();
+
+        // Re-open to prove it persisted to disk, not just in memory.
+        drop(conn);
+        let conn2 = open(&db).unwrap();
+        let all = load_all(&conn2).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].uuid, "u1");
+        assert_eq!(all[0].original_path, "/shoot/IMG_1.jpg");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

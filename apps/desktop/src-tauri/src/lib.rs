@@ -9,9 +9,7 @@ mod collect;
 mod manifest;
 mod preview;
 
-use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{AppHandle, Emitter};
 
 #[derive(serde::Serialize, Clone)]
@@ -42,48 +40,33 @@ async fn generate_previews(
     std::fs::create_dir_all(&out).map_err(|e| format!("create output dir: {e}"))?;
 
     let images = preview::list_images(&source);
-    let total = images.len();
-    let counter = AtomicUsize::new(0);
 
-    // Parallel preview generation across CPU cores.
-    let results: Vec<Result<preview::PreviewResult, String>> = images
-        .par_iter()
-        .map(|path| {
-            let r = preview::generate_one(path, &out, max_edge, jpeg_quality);
-            let done = counter.fetch_add(1, Ordering::SeqCst) + 1;
+    // Parallel preview generation (decoupled engine), emitting progress to the UI as each lands.
+    let (photos, failures) = preview::generate_batch(
+        &images,
+        &out,
+        max_edge,
+        jpeg_quality,
+        |done, total, current| {
             let _ = app.emit(
                 "preview-progress",
-                Progress {
-                    done,
-                    total,
-                    current: path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
-                },
+                Progress { done, total, current: current.to_string() },
             );
-            r
-        })
-        .collect();
+        },
+    );
 
-    // Persist the manifest and split successes/failures.
+    // Persist the manifest for every successful preview.
     let manifest_path = out.join("manifest.photobooth.sqlite");
     let conn = manifest::open(&manifest_path).map_err(|e| format!("manifest open: {e}"))?;
-
-    let mut photos = Vec::new();
-    let mut failures = Vec::new();
-    for r in results {
-        match r {
-            Ok(p) => {
-                let entry = manifest::ManifestEntry {
-                    uuid: p.uuid.clone(),
-                    original_filename: p.original_filename.clone(),
-                    original_path: p.original_path.clone(),
-                    content_hash: p.content_hash.clone(),
-                };
-                manifest::insert(&conn, &entry, &p.preview_path, p.width, p.height)
-                    .map_err(|e| format!("manifest insert: {e}"))?;
-                photos.push(p);
-            }
-            Err(e) => failures.push(e),
-        }
+    for p in &photos {
+        let entry = manifest::ManifestEntry {
+            uuid: p.uuid.clone(),
+            original_filename: p.original_filename.clone(),
+            original_path: p.original_path.clone(),
+            content_hash: p.content_hash.clone(),
+        };
+        manifest::insert(&conn, &entry, &p.preview_path, p.width, p.height)
+            .map_err(|e| format!("manifest insert: {e}"))?;
     }
 
     Ok(GenerateOutput {

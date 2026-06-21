@@ -30,8 +30,22 @@ export async function createProject(name: string, clientName?: string): Promise<
   return data.id as string;
 }
 
-/** Ask the edge function for presigned PUT URLs, keyed by R2 object key. */
-async function signUploads(projectId: string, keys: string[]): Promise<Record<string, string>> {
+// Storage backend: 'r2' (production, via the r2-sign-upload edge function) or 'supabase'
+// (local/simple, via Supabase Storage signed upload URLs). Both return PUT URLs the native Rust
+// uploader writes preview bytes to, so the rest of the pipeline is identical.
+const STORAGE_BACKEND = (import.meta.env.VITE_STORAGE_BACKEND as string) ?? 'r2';
+
+/** Presigned PUT URLs keyed by object key, from whichever storage backend is configured. */
+async function presignUploads(projectId: string, keys: string[]): Promise<Record<string, string>> {
+  if (STORAGE_BACKEND === 'supabase') {
+    const urls: Record<string, string> = {};
+    for (const key of keys) {
+      const { data, error } = await supabase.storage.from('previews').createSignedUploadUrl(key);
+      if (error) throw error;
+      urls[key] = data.signedUrl; // full URL; PUT bytes with Content-Type: image/jpeg
+    }
+    return urls;
+  }
   const { data, error } = await supabase.functions.invoke('r2-sign-upload', {
     body: { projectId, keys },
   });
@@ -58,7 +72,7 @@ export async function uploadAndRecord(
   // 1. Build R2 keys and presign.
   const keyByUuid = new Map(photos.map((p) => [p.uuid, previewObjectKey(studioId, projectId, p.uuid)]));
   onPhase?.({ phase: 'signing' });
-  const urls = await signUploads(projectId, [...keyByUuid.values()]);
+  const urls = await presignUploads(projectId, [...keyByUuid.values()]);
 
   // 2. Upload preview bytes natively (Rust).
   onPhase?.({ phase: 'uploading' });

@@ -16,6 +16,13 @@ $$;
 
 create extension if not exists pgcrypto;
 
+-- Standard Supabase roles, so the grants in 0003_grants.sql apply cleanly on plain Postgres too.
+do $$ begin
+  if not exists (select from pg_roles where rolname='anon') then create role anon nologin; end if;
+  if not exists (select from pg_roles where rolname='authenticated') then create role authenticated nologin; end if;
+  if not exists (select from pg_roles where rolname='service_role') then create role service_role nologin; end if;
+end $$;
+
 -- A role RLS actually applies to (the postgres owner bypasses RLS, like the service role does).
 drop role if exists app_user;
 create role app_user nologin;

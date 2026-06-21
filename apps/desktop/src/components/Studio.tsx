@@ -8,10 +8,14 @@ import {
   createProject,
   ensureShareLink,
   getStudioId,
+  subscribeToSubmissions,
   uploadAndRecord,
   type PreviewResult,
   type SyncProgress,
 } from '../lib/api.js';
+import { Collect } from './Collect.js';
+
+type Mode = 'upload' | 'collect';
 
 interface GenerateOutput {
   manifest_path: string;
@@ -38,10 +42,22 @@ export function Studio({ session }: { session: Session }) {
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<Mode>('upload');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [newSubmission, setNewSubmission] = useState(false);
 
   useEffect(() => {
     getStudioId().then(setStudioId).catch((e) => setError(String(e?.message ?? e)));
   }, []);
+
+  // Realtime: when a client submits a selection, badge the Collect tab and refresh its list.
+  useEffect(() => {
+    if (!studioId) return;
+    return subscribeToSubmissions(studioId, () => {
+      setNewSubmission(true);
+      setRefreshKey((k) => k + 1);
+    });
+  }, [studioId]);
 
   useEffect(() => {
     const a = listen<Progress>('preview-progress', (e) => setGen(e.payload));
@@ -116,6 +132,30 @@ export function Studio({ session }: { session: Session }) {
           Sign out ({session.user.email})
         </button>
       </div>
+      <div className="row" style={{ gap: 8 }}>
+        <button
+          className="btn"
+          style={{ background: mode === 'upload' ? '#2563eb' : '#9ca3af' }}
+          onClick={() => setMode('upload')}
+        >
+          1 · Upload previews
+        </button>
+        <button
+          className="btn"
+          style={{ background: mode === 'collect' ? '#2563eb' : '#9ca3af' }}
+          onClick={() => {
+            setMode('collect');
+            setNewSubmission(false);
+          }}
+        >
+          2 · Collect selections{newSubmission ? ' 🔴' : ''}
+        </button>
+      </div>
+
+      {mode === 'collect' ? (
+        <Collect refreshKey={refreshKey} />
+      ) : (
+        <>
       <p className="muted">
         Create a project, then generate &amp; upload previews. Only previews are uploaded — your
         high-res originals stay on this machine.
@@ -182,6 +222,8 @@ export function Studio({ session }: { session: Session }) {
             </button>
           </div>
         </div>
+      )}
+        </>
       )}
       {error && <p style={{ color: '#ef4444' }}>⚠️ {error}</p>}
     </div>

@@ -128,3 +128,90 @@ export async function ensureShareLink(projectId: string): Promise<string> {
   const base = (import.meta.env.VITE_GALLERY_BASE_URL as string) ?? 'http://localhost:5173';
   return `${base}/g/${token}`;
 }
+
+// ── Phase 4: selection sync + auto-collect ───────────────────────────────────────────────────
+
+export interface CollectableProject {
+  id: string;
+  name: string;
+  clientName: string | null;
+  photoCount: number;
+  status: string;
+}
+
+export interface CollectReport {
+  copied: number;
+  skipped_existing: number;
+  unmatched: string[];
+  output_dir: string;
+}
+
+/** Projects whose clients have submitted a selection (ready for the studio to collect). */
+export async function listCollectableProjects(): Promise<CollectableProject[]> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('id, name, client_name, photo_count, status')
+    .eq('status', 'selection_submitted')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    clientName: p.client_name,
+    photoCount: p.photo_count,
+    status: p.status,
+  }));
+}
+
+/** The photo UUIDs the client selected for a project. */
+export async function getSelectedUuids(projectId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('selections')
+    .select('photo_uuid')
+    .eq('project_id', projectId);
+  if (error) throw error;
+  return (data ?? []).map((s) => s.photo_uuid as string);
+}
+
+/**
+ * Collect the selected originals into `<destRoot>/Selected Photos` via the native Rust command,
+ * matching by UUID against the local manifest written at generation time. Originals are copied,
+ * never moved or modified.
+ */
+export async function collectSelected(
+  manifestPath: string,
+  selectedUuids: string[],
+  destRoot: string,
+): Promise<CollectReport> {
+  return invoke<CollectReport>('collect_selected', { manifestPath, selectedUuids, destRoot });
+}
+
+/** Mark a project collected once the studio has pulled the originals. */
+export async function markCollected(projectId: string): Promise<void> {
+  await supabase.from('projects').update({ status: 'collected' }).eq('id', projectId);
+}
+
+/**
+ * Subscribe to client submissions for this studio. Fires `onSubmit` whenever a project flips to
+ * `selection_submitted`. Returns an unsubscribe function. Degrades gracefully if Realtime is off.
+ */
+export function subscribeToSubmissions(studioId: string, onSubmit: () => void): () => void {
+  const channel = supabase
+    .channel(`submissions-${studioId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'projects',
+        filter: `studio_id=eq.${studioId}`,
+      },
+      (payload) => {
+        if ((payload.new as { status?: string }).status === 'selection_submitted') onSubmit();
+      },
+    )
+    .subscribe();
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}

@@ -91,3 +91,40 @@ export async function uploadAndRecord(
 
   return report;
 }
+
+/** URL-safe high-entropy share token (24 chars, ~108 bits). */
+function generateShareToken(): string {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/**
+ * Ensure the project has a share token and return the full client gallery URL. Reuses an
+ * existing token so a re-shared link stays stable. Default 90-day expiry.
+ */
+export async function ensureShareLink(projectId: string): Promise<string> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('share_token')
+    .eq('id', projectId)
+    .single();
+  if (error) throw error;
+
+  let token = data?.share_token as string | null;
+  if (!token) {
+    token = generateShareToken();
+    const expires = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    const { error: updErr } = await supabase
+      .from('projects')
+      .update({ share_token: token, share_expires_at: expires })
+      .eq('id', projectId);
+    if (updErr) throw updErr;
+  }
+
+  const base = (import.meta.env.VITE_GALLERY_BASE_URL as string) ?? 'http://localhost:5173';
+  return `${base}/g/${token}`;
+}

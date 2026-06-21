@@ -47,8 +47,9 @@ Each Vite app reads its own `.env`. Copy the root template and fill the `VITE_` 
 VITE_SUPABASE_URL=https://<ref>.supabase.co
 VITE_SUPABASE_ANON_KEY=<anon key>
 VITE_R2_PUBLIC_BASE_URL=https://<your-r2-public-or-cdn-domain>
+VITE_GALLERY_BASE_URL=http://localhost:5173   # where the gallery is hosted
 
-# apps/gallery/.env   (same three values)
+# apps/gallery/.env   (the first three values; gallery doesn't need GALLERY_BASE_URL)
 ```
 
 ## 5. Verify the round trip

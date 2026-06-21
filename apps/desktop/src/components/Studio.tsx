@@ -6,6 +6,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { supabase } from '../lib/supabase.js';
 import {
   createProject,
+  ensureShareLink,
   getStudioId,
   uploadAndRecord,
   type PreviewResult,
@@ -34,6 +35,8 @@ export function Studio({ session }: { session: Session }) {
   const [up, setUp] = useState<{ done: number; total: number } | null>(null);
   const [phase, setPhase] = useState<SyncProgress['phase'] | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
+  const [shareLink, setShareLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -83,6 +86,11 @@ export function Studio({ session }: { session: Session }) {
         out.photos,
         (p) => setPhase(p.phase),
       );
+
+      // 4. Create the shareable client gallery link.
+      const link = await ensureShareLink(projectId);
+      setShareLink(link);
+      setCopied(false);
 
       setStage('done');
       setSummary(
@@ -158,6 +166,23 @@ export function Studio({ session }: { session: Session }) {
       )}
 
       {summary && <p style={{ color: '#16a34a' }}>✅ {summary}</p>}
+      {shareLink && (
+        <div className="row" style={{ display: 'block' }}>
+          <p className="muted" style={{ marginBottom: 4 }}>Client gallery link — send this to your client:</p>
+          <div className="row">
+            <code style={{ flex: 1, wordBreak: 'break-all' }}>{shareLink}</code>
+            <button
+              className="btn"
+              onClick={async () => {
+                await navigator.clipboard.writeText(shareLink);
+                setCopied(true);
+              }}
+            >
+              {copied ? 'Copied ✓' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
       {error && <p style={{ color: '#ef4444' }}>⚠️ {error}</p>}
     </div>
   );

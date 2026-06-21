@@ -28,6 +28,9 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 walkdir = "2"
 
+# Preview upload to R2 (native HTTP PUT to presigned URLs — avoids webview CORS)
+ureq = "2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

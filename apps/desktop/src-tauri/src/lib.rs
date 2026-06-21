@@ -1,13 +1,15 @@
 //! Tauri command surface for PhotoBooth Studio.
 //!
-//! Phase 1 commands implemented here:
-//!  - `generate_previews`: scan a folder, build previews in parallel, write the SQLite manifest,
-//!     emit progress events, and return the per-photo records to upload to the cloud.
-//!  - `collect_selected`: copy the client's selected originals into `Selected Photos/`.
+//! Commands implemented here:
+//!  - `generate_previews` (Phase 1): scan a folder, build previews in parallel, write the SQLite
+//!     manifest, emit progress events, and return the per-photo records.
+//!  - `upload_previews` (Phase 2): PUT previews to R2 via presigned URLs, natively (no CORS).
+//!  - `collect_selected` (Phase 4): copy the client's selected originals into `Selected Photos/`.
 
 mod collect;
 mod manifest;
 mod preview;
+mod upload;
 
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
@@ -17,6 +19,12 @@ struct Progress {
     done: usize,
     total: usize,
     current: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct UploadProgress {
+    done: usize,
+    total: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -76,6 +84,22 @@ async fn generate_previews(
     })
 }
 
+/// Upload previews to R2 via presigned PUT URLs. Runs the blocking, parallel uploads off the
+/// async runtime so the UI stays responsive, emitting `upload-progress` events.
+#[tauri::command]
+async fn upload_previews(
+    app: AppHandle,
+    items: Vec<upload::UploadItem>,
+) -> Result<upload::UploadReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        upload::upload_all(&items, |done, total| {
+            let _ = app.emit("upload-progress", UploadProgress { done, total });
+        })
+    })
+    .await
+    .map_err(|e| format!("upload task: {e}"))
+}
+
 /// Copy the selected originals (by UUID) into `<dest_root>/Selected Photos`.
 #[tauri::command]
 async fn collect_selected(
@@ -91,7 +115,11 @@ async fn collect_selected(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![generate_previews, collect_selected])
+        .invoke_handler(tauri::generate_handler![
+            generate_previews,
+            upload_previews,
+            collect_selected
+        ])
         .run(tauri::generate_context!())
         .expect("error while running PhotoBooth Studio");
 }

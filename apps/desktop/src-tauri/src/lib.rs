@@ -42,12 +42,14 @@ async fn generate_previews(
     output_dir: String,
     max_edge: u32,
     jpeg_quality: u8,
+    watermark: Option<String>,
 ) -> Result<GenerateOutput, String> {
     let source = PathBuf::from(&source_dir);
     let out = PathBuf::from(&output_dir);
     std::fs::create_dir_all(&out).map_err(|e| format!("create output dir: {e}"))?;
 
     let images = preview::list_images(&source);
+    let watermark = watermark.filter(|s| !s.trim().is_empty());
 
     // Parallel preview generation (decoupled engine), emitting progress to the UI as each lands.
     let (photos, failures) = preview::generate_batch(
@@ -55,6 +57,7 @@ async fn generate_previews(
         &out,
         max_edge,
         jpeg_quality,
+        watermark.as_deref(),
         |done, total, current| {
             let _ = app.emit(
                 "preview-progress",

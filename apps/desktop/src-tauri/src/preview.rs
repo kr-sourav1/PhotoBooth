@@ -14,6 +14,13 @@ use walkdir::WalkDir;
 
 const SUPPORTED: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "webp", "heic"];
 
+/// Camera RAW formats. We don't demosaic these — instead we extract the full-size JPEG preview
+/// that cameras embed inside the RAW (fast, no heavy RAW pipeline), which is exactly what a
+/// selection preview needs. Covers the common Canon/Nikon/Sony/Fuji/Panasonic/Adobe formats.
+const RAW_EXTS: &[&str] = &["cr2", "cr3", "nef", "arw", "dng", "raf", "rw2", "orf"];
+
+static WATERMARK_FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
+
 #[derive(serde::Serialize, Clone)]
 pub struct PreviewResult {
     pub uuid: String,
@@ -34,19 +41,31 @@ pub fn list_images(dir: &Path) -> Vec<PathBuf> {
         .filter(|p| {
             p.extension()
                 .and_then(|x| x.to_str())
-                .map(|x| SUPPORTED.contains(&x.to_lowercase().as_str()))
+                .map(|x| {
+                    let e = x.to_lowercase();
+                    SUPPORTED.contains(&e.as_str()) || RAW_EXTS.contains(&e.as_str())
+                })
                 .unwrap_or(false)
         })
         .collect()
 }
 
-/// Generate a single preview. `max_edge` is the longest-side target (e.g. 1600px). Returns the
-/// metadata to be recorded in the manifest and uploaded (as a record) to the cloud.
+fn is_raw(path: &Path) -> bool {
+    path.extension()
+        .and_then(|x| x.to_str())
+        .map(|x| RAW_EXTS.contains(&x.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// Generate a single preview. `max_edge` is the longest-side target (e.g. 1600px). `watermark`,
+/// if set, tiles semi-transparent text across the preview. Returns the metadata to be recorded in
+/// the manifest and uploaded (as a record) to the cloud.
 pub fn generate_one(
     original: &Path,
     out_dir: &Path,
     max_edge: u32,
     jpeg_quality: u8,
+    watermark: Option<&str>,
 ) -> Result<PreviewResult, String> {
     let bytes = fs::read(original).map_err(|e| format!("read: {e}"))?;
 
@@ -56,9 +75,19 @@ pub fn generate_one(
         format!("{:x}", h.finalize())
     };
 
-    let orientation = exif_orientation(&bytes);
+    // For RAW files, decode the embedded full-size JPEG preview rather than the raw sensor data.
+    let decode_bytes: std::borrow::Cow<[u8]> = if is_raw(original) {
+        match extract_embedded_jpeg(&bytes) {
+            Some(jpeg) => std::borrow::Cow::Owned(jpeg),
+            None => return Err(format!("{}: no embedded preview in RAW", display_name(original))),
+        }
+    } else {
+        std::borrow::Cow::Borrowed(&bytes)
+    };
 
-    let decoded = ImageReader::new(Cursor::new(&bytes))
+    let orientation = exif_orientation(&decode_bytes);
+
+    let decoded = ImageReader::new(Cursor::new(decode_bytes.as_ref()))
         .with_guessed_format()
         .map_err(|e| format!("format: {e}"))?
         .decode()
@@ -71,18 +100,26 @@ pub fn generate_one(
     let thumb = img.resize(max_edge, max_edge, image::imageops::FilterType::Triangle);
     let (width, height) = (thumb.width(), thumb.height());
 
+    // Encode, optionally watermarked.
+    let rgb = match watermark {
+        Some(text) if !text.is_empty() => {
+            let mut rgba = thumb.to_rgba8();
+            apply_watermark(&mut rgba, text);
+            image::DynamicImage::ImageRgba8(rgba).to_rgb8()
+        }
+        _ => thumb.to_rgb8(),
+    };
+
     let uuid = Uuid::new_v4().to_string();
     let preview_name = format!("{uuid}.jpg");
     let preview_path = out_dir.join(&preview_name);
 
     let mut buf = Vec::new();
-    thumb
-        .to_rgb8()
-        .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
-            &mut buf,
-            jpeg_quality,
-        ))
-        .map_err(|e| format!("encode: {e}"))?;
+    rgb.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut buf,
+        jpeg_quality,
+    ))
+    .map_err(|e| format!("encode: {e}"))?;
     fs::write(&preview_path, &buf).map_err(|e| format!("write preview: {e}"))?;
 
     Ok(PreviewResult {
@@ -109,6 +146,7 @@ pub fn generate_batch<F>(
     out_dir: &Path,
     max_edge: u32,
     jpeg_quality: u8,
+    watermark: Option<&str>,
     on_progress: F,
 ) -> (Vec<PreviewResult>, Vec<String>)
 where
@@ -120,7 +158,7 @@ where
     let results: Vec<Result<PreviewResult, String>> = images
         .par_iter()
         .map(|path| {
-            let r = generate_one(path, out_dir, max_edge, jpeg_quality);
+            let r = generate_one(path, out_dir, max_edge, jpeg_quality, watermark);
             let done = counter.fetch_add(1, Ordering::SeqCst) + 1;
             on_progress(
                 done,
@@ -140,6 +178,98 @@ where
         }
     }
     (ok, errs)
+}
+
+fn display_name(p: &Path) -> &str {
+    p.file_name().and_then(|n| n.to_str()).unwrap_or("unknown")
+}
+
+/// Extract the largest embedded JPEG (SOI..EOI) from a container such as a camera RAW. Cameras
+/// embed a full-size JPEG preview; the largest decodable one is what we want. We pick the largest
+/// candidate that actually decodes, so a stray 0xFFD9 inside compressed data can't fool us.
+fn extract_embedded_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    // Collect candidate (start, end) spans bounded by SOI (FF D8 FF) and EOI (FF D9).
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        if bytes[i] == 0xFF && bytes[i + 1] == 0xD8 && bytes[i + 2] == 0xFF {
+            let start = i;
+            let mut j = i + 2;
+            let mut end = None;
+            while j + 1 < bytes.len() {
+                if bytes[j] == 0xFF && bytes[j + 1] == 0xD9 {
+                    end = Some(j + 2);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(e) = end {
+                candidates.push((start, e));
+                i = e;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    // Largest span first; return the first that decodes as a real image.
+    candidates.sort_by_key(|(s, e)| std::cmp::Reverse(e - s));
+    for (s, e) in candidates {
+        let slice = &bytes[s..e];
+        if image::ImageReader::new(Cursor::new(slice))
+            .with_guessed_format()
+            .ok()
+            .and_then(|r| r.decode().ok())
+            .is_some()
+        {
+            return Some(slice.to_vec());
+        }
+    }
+    None
+}
+
+/// Tile semi-transparent text across the image to deter clients reusing previews without paying.
+fn apply_watermark(img: &mut image::RgbaImage, text: &str) {
+    let font = match ab_glyph::FontRef::try_from_slice(WATERMARK_FONT) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let (w, h) = (img.width(), img.height());
+    let scale = ab_glyph::PxScale::from((w as f32 / 16.0).clamp(16.0, 64.0));
+
+    // Render onto a transparent layer, then composite white at low opacity for a subtle mark.
+    let mut layer = image::RgbaImage::new(w, h);
+    let step_x = (w as f32 * 0.5).max(120.0) as i32;
+    let step_y = (h as f32 * 0.25).max(80.0) as i32;
+    let mut y = 0i32;
+    let mut row = 0;
+    while y < h as i32 {
+        let offset = if row % 2 == 0 { 0 } else { step_x / 2 };
+        let mut x = -step_x + offset;
+        while x < w as i32 {
+            imageproc::drawing::draw_text_mut(
+                &mut layer,
+                image::Rgba([255, 255, 255, 255]),
+                x,
+                y,
+                scale,
+                &font,
+                text,
+            );
+            x += step_x;
+        }
+        y += step_y;
+        row += 1;
+    }
+
+    let opacity = 0.22_f32;
+    for (base_px, layer_px) in img.pixels_mut().zip(layer.pixels()) {
+        let a = (layer_px[3] as f32 / 255.0) * opacity;
+        if a > 0.0 {
+            for c in 0..3 {
+                base_px[c] = ((1.0 - a) * base_px[c] as f32 + a * 255.0) as u8;
+            }
+        }
+    }
 }
 
 fn exif_orientation(bytes: &[u8]) -> u32 {
@@ -193,7 +323,7 @@ mod tests {
         let original = write_jpeg(&dir, "IMG_9.jpg", 4000, 3000);
         let orig_size = fs::metadata(&original).unwrap().len();
 
-        let r = generate_one(&original, &out, 1600, 80).unwrap();
+        let r = generate_one(&original, &out, 1600, 80, None).unwrap();
 
         assert_eq!(r.original_filename, "IMG_9.jpg");
         assert!(!r.content_hash.is_empty());
@@ -204,6 +334,43 @@ mod tests {
         let preview = out.join(&r.preview_path);
         assert!(preview.exists());
         assert!(fs::metadata(&preview).unwrap().len() < orig_size, "preview should be smaller");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn watermark_alters_pixels_and_stays_decodable() {
+        let dir = tmpdir("wm");
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let original = write_jpeg(&dir, "IMG_W.jpg", 1600, 1200);
+
+        let plain = generate_one(&original, &out, 800, 85, None).unwrap();
+        let marked = generate_one(&original, &out, 800, 85, Some("PREVIEW · DEMO STUDIO")).unwrap();
+
+        let plain_bytes = fs::read(out.join(&plain.preview_path)).unwrap();
+        let marked_bytes = fs::read(out.join(&marked.preview_path)).unwrap();
+        assert_ne!(plain_bytes, marked_bytes, "watermark should change the output");
+        // The watermarked preview must still be a valid, decodable JPEG.
+        assert!(image::load_from_memory(&marked_bytes).is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn extracts_largest_embedded_jpeg_from_raw_container() {
+        let dir = tmpdir("raw");
+        // Build a fake RAW: TIFF-ish header + a tiny embedded JPEG + a larger embedded JPEG.
+        let small = fs::read(write_jpeg(&dir, "small.jpg", 80, 60)).unwrap();
+        let large = fs::read(write_jpeg(&dir, "large.jpg", 1024, 768)).unwrap();
+        let mut raw = vec![0x49, 0x49, 0x2A, 0x00, 1, 2, 3, 4]; // "II*\0" TIFF magic + filler
+        raw.extend_from_slice(&small);
+        raw.extend_from_slice(&[0u8; 16]);
+        raw.extend_from_slice(&large);
+        raw.extend_from_slice(&[9u8; 8]);
+
+        let extracted = extract_embedded_jpeg(&raw).expect("should find an embedded jpeg");
+        let img = image::load_from_memory(&extracted).expect("extracted jpeg decodes");
+        // It should pick the LARGER preview (1024x768), not the small thumbnail.
+        assert_eq!((img.width(), img.height()), (1024, 768));
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -240,7 +407,7 @@ mod tests {
         imgs.push(bad);
 
         let seen = std::sync::atomic::AtomicUsize::new(0);
-        let (ok, errs) = generate_batch(&imgs, &out, 600, 75, |_d, _t, _c| {
+        let (ok, errs) = generate_batch(&imgs, &out, 600, 75, None, |_d, _t, _c| {
             seen.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -263,7 +430,7 @@ mod tests {
             .collect();
 
         let start = std::time::Instant::now();
-        let (ok, errs) = generate_batch(&imgs, &out, 1600, 80, |_d, _t, _c| {});
+        let (ok, errs) = generate_batch(&imgs, &out, 1600, 80, None, |_d, _t, _c| {});
         let elapsed = start.elapsed();
 
         assert_eq!(ok.len(), N);

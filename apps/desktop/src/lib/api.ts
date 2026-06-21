@@ -143,6 +143,55 @@ export async function ensureShareLink(projectId: string): Promise<string> {
   return `${base}/g/${token}`;
 }
 
+// ── Project management ───────────────────────────────────────────────────────────────────────
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  clientName: string | null;
+  status: string;
+  photoCount: number;
+  shareToken: string | null;
+  createdAt: string;
+}
+
+export async function listAllProjects(): Promise<ProjectSummary[]> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('id, name, client_name, status, photo_count, share_token, created_at')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    clientName: p.client_name,
+    status: p.status,
+    photoCount: p.photo_count,
+    shareToken: p.share_token,
+    createdAt: p.created_at,
+  }));
+}
+
+/** Delete a project: removes its preview objects from storage (best effort), then the DB rows
+ * (photos/selections cascade). Originals on the studio's disk are never touched. */
+export async function deleteProject(projectId: string): Promise<void> {
+  const studioId = await getStudioId();
+  // Best-effort storage cleanup for the Supabase backend.
+  if (STORAGE_BACKEND === 'supabase') {
+    try {
+      const prefix = `${studioId}/${projectId}`;
+      const { data: files } = await supabase.storage.from('previews').list(prefix, { limit: 1000 });
+      if (files && files.length) {
+        await supabase.storage.from('previews').remove(files.map((f) => `${prefix}/${f.name}`));
+      }
+    } catch {
+      // non-fatal — orphaned previews can be cleaned later
+    }
+  }
+  const { error } = await supabase.from('projects').delete().eq('id', projectId);
+  if (error) throw error;
+}
+
 // ── Phase 4: selection sync + auto-collect ───────────────────────────────────────────────────
 
 export interface CollectableProject {

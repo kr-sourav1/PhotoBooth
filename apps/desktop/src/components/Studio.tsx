@@ -14,8 +14,9 @@ import {
   type SyncProgress,
 } from '../lib/api.js';
 import { Collect } from './Collect.js';
+import { Projects } from './Projects.js';
 
-type Mode = 'upload' | 'collect';
+type Mode = 'upload' | 'projects' | 'collect';
 
 interface GenerateOutput {
   manifest_path: string;
@@ -33,6 +34,7 @@ type Stage = 'idle' | 'generating' | 'uploading' | 'done';
 export function Studio({ session }: { session: Session }) {
   const [studioId, setStudioId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState('');
+  const [watermark, setWatermark] = useState('');
   const [sourceDir, setSourceDir] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>('idle');
   const [gen, setGen] = useState<Progress | null>(null);
@@ -91,6 +93,7 @@ export function Studio({ session }: { session: Session }) {
         outputDir: previewDir,
         maxEdge: 1600,
         jpegQuality: 80,
+        watermark: watermark.trim() || null,
       });
 
       // 3. Upload previews to R2 + record photo rows (cloud).
@@ -142,6 +145,13 @@ export function Studio({ session }: { session: Session }) {
         </button>
         <button
           className="btn"
+          style={{ background: mode === 'projects' ? '#2563eb' : '#9ca3af' }}
+          onClick={() => setMode('projects')}
+        >
+          Projects
+        </button>
+        <button
+          className="btn"
           style={{ background: mode === 'collect' ? '#2563eb' : '#9ca3af' }}
           onClick={() => {
             setMode('collect');
@@ -154,6 +164,8 @@ export function Studio({ session }: { session: Session }) {
 
       {mode === 'collect' ? (
         <Collect refreshKey={refreshKey} />
+      ) : mode === 'projects' ? (
+        <Projects refreshKey={refreshKey} />
       ) : (
         <>
       <p className="muted">
@@ -169,6 +181,19 @@ export function Studio({ session }: { session: Session }) {
           style={{ width: '100%', maxWidth: 420, padding: 10 }}
           disabled={busy}
         />
+      </div>
+
+      <div className="row" style={{ display: 'block' }}>
+        <input
+          placeholder="Watermark text (optional, e.g. PREVIEW — Sharma Photography)"
+          value={watermark}
+          onChange={(e) => setWatermark(e.target.value)}
+          style={{ width: '100%', maxWidth: 420, padding: 10 }}
+          disabled={busy}
+        />
+        <p className="muted" style={{ marginTop: 4 }}>
+          Leave blank for no watermark. Supports JPG, PNG, TIFF, HEIC and RAW (CR2/NEF/ARW/DNG…).
+        </p>
       </div>
 
       <div className="row">

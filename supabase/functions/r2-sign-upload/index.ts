@@ -13,7 +13,8 @@ import { AwsClient } from 'npm:aws4fetch@1';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-api-version',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
 const R2_ACCOUNT_ID = Deno.env.get('R2_ACCOUNT_ID')!;

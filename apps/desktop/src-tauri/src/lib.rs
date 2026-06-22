@@ -46,6 +46,10 @@ async fn generate_previews(
 ) -> Result<GenerateOutput, String> {
     let source = PathBuf::from(&source_dir);
     let out = PathBuf::from(&output_dir);
+    // Start clean so re-running a project doesn't pile up stale previews from a prior run.
+    if out.exists() {
+        let _ = std::fs::remove_dir_all(&out);
+    }
     std::fs::create_dir_all(&out).map_err(|e| format!("create output dir: {e}"))?;
 
     let images = preview::list_images(&source);
@@ -103,6 +107,29 @@ async fn upload_previews(
     .map_err(|e| format!("upload task: {e}"))
 }
 
+/// Delete the local preview JPEGs after they've been uploaded — they live in the cloud now, and
+/// only the manifest (uuid → original path) needs to persist locally for collection. Keeps the
+/// `.sqlite` manifest, removes the `.jpg` previews, so re-uploads never accumulate on disk.
+#[tauri::command]
+fn cleanup_previews(preview_dir: String) -> Result<(), String> {
+    let dir = Path::new(&preview_dir);
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read dir: {e}"))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let is_jpg = path
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.eq_ignore_ascii_case("jpg") || x.eq_ignore_ascii_case("jpeg"))
+            .unwrap_or(false);
+        if is_jpg {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
 /// Copy the selected originals (by UUID) into `<dest_root>/Selected Photos`.
 #[tauri::command]
 async fn collect_selected(
@@ -121,6 +148,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_previews,
             upload_previews,
+            cleanup_previews,
             collect_selected
         ])
         .run(tauri::generate_context!())

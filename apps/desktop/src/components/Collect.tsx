@@ -9,7 +9,9 @@ import {
   type CollectReport,
 } from '../lib/api.js';
 
-const MANIFEST_REL = '.photobooth-previews/manifest.photobooth.sqlite';
+// Per-project manifest, written under the originals folder during preview generation.
+const manifestPathFor = (originalsDir: string, projectId: string) =>
+  `${originalsDir}/.photobooth-previews/${projectId}/manifest.photobooth.sqlite`;
 
 export function Collect({ refreshKey }: { refreshKey: number }) {
   const [projects, setProjects] = useState<CollectableProject[]>([]);
@@ -43,7 +45,7 @@ export function Collect({ refreshKey }: { refreshKey: number }) {
     try {
       const uuids = await getSelectedUuids(selectedProject.id);
       if (uuids.length === 0) throw new Error('No selection found for this project.');
-      const manifestPath = `${originalsDir}/${MANIFEST_REL}`;
+      const manifestPath = manifestPathFor(originalsDir, selectedProject.id);
       const result = await collectSelected(manifestPath, uuids, originalsDir);
       setReport(result);
       if (result.unmatched.length === 0) {

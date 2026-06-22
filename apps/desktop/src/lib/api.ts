@@ -103,6 +103,14 @@ export async function uploadAndRecord(
     .update({ photo_count: rows.length, status: 'awaiting_selection' })
     .eq('id', projectId);
 
+  // Previews are uploaded and recorded — delete the local copies (keep only the manifest for
+  // collection) so re-uploads never accumulate on disk.
+  try {
+    await invoke('cleanup_previews', { previewDir });
+  } catch {
+    // non-fatal
+  }
+
   return report;
 }
 

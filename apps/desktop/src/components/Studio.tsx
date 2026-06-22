@@ -86,8 +86,9 @@ export function Studio({ session }: { session: Session }) {
       const projectId = await createProject(projectName.trim());
 
       // 2. Generate previews locally (Rust). Originals never leave this machine.
+      // Per-project subfolder so re-uploading the same folder as a new project never collides.
       setStage('generating');
-      const previewDir = `${sourceDir}/.photobooth-previews`;
+      const previewDir = `${sourceDir}/.photobooth-previews/${projectId}`;
       const out = await invoke<GenerateOutput>('generate_previews', {
         sourceDir,
         outputDir: previewDir,

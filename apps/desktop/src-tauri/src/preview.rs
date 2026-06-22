@@ -32,9 +32,15 @@ pub struct PreviewResult {
     pub height: u32,
 }
 
+/// Name of the directory (nested inside the originals folder) where previews + manifest live.
+pub const PREVIEW_DIR_NAME: &str = ".photobooth-previews";
+
 pub fn list_images(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
+        // Never descend into our own preview output dir — otherwise the recursive scan would
+        // re-ingest previously generated previews as if they were new originals (count snowball).
+        .filter_entry(|e| e.file_name() != PREVIEW_DIR_NAME)
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .map(|e| e.into_path())
@@ -390,6 +396,23 @@ mod tests {
         fs::write(dir.join("b.JPG"), fs::read(dir.join("a.jpg")).unwrap()).unwrap();
         let imgs = list_images(&dir);
         assert_eq!(imgs.len(), 2); // a.jpg + b.JPG (case-insensitive), not notes.txt
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_images_excludes_preview_output_dir() {
+        // Originals must be counted; previously generated previews under .photobooth-previews
+        // must NOT be re-ingested (otherwise the count snowballs across runs).
+        let dir = tmpdir("list-excl");
+        write_jpeg(&dir, "orig1.jpg", 60, 40);
+        write_jpeg(&dir, "orig2.jpg", 60, 40);
+        let prev = dir.join(PREVIEW_DIR_NAME).join("some-project-id");
+        fs::create_dir_all(&prev).unwrap();
+        write_jpeg(&prev, "old-preview-a.jpg", 30, 20);
+        write_jpeg(&prev, "old-preview-b.jpg", 30, 20);
+
+        let imgs = list_images(&dir);
+        assert_eq!(imgs.len(), 2, "should count only the 2 originals, not the previews");
         fs::remove_dir_all(&dir).ok();
     }
 

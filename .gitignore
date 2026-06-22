@@ -17,6 +17,8 @@ apps/desktop/src-tauri/gen/
 .env
 .env.*
 !.env.example
+config/cloud.env
+config/*.env
 
 # Supabase local
 supabase/.branches/
